@@ -7,6 +7,9 @@ Set-ExecutionPolicy Bypass -Scope Process -Force; iex ((New-Object System.Net.We
 choco install nvm -y
 nvm install node -y
 
+# Yarn
+choco install Yarn -y
+
 # .NET
 choco install netfx-4.8 -y
 choco install dotnetcore -y
@@ -23,15 +26,18 @@ choco install firefox -y
 choco install curl -y
 choco install git -y
 choco install vscode -y
+choco install postman -y
+choco install sql-server-management-studio -y
+choco install licecap -y
+choco install github -y
+choco install filezilla -y
+
+# VS Code Extensions
+choco install vscode-eslint -y
 choco install vscode-powershell -y
 choco install vscode-csharp -y
 choco install vscode-gitlens -y
-choco install postman -y
-choco install sql-server-management-studio -y
+choco install vscode-codespellchecker -y
 
 # VS 2019
 choco install visualstudio2019community
-
-# Misc
-choco install filezilla -y
-choco install github
