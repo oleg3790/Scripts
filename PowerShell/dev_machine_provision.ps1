@@ -31,6 +31,7 @@ choco install sql-server-management-studio -y
 choco install licecap -y
 choco install github -y
 choco install filezilla -y
+choco install ag # The Silver Searcher - https://github.com/ggreer/the_silver_searcher
 
 # VS Code Extensions
 choco install vscode-eslint -y
