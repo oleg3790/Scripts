@@ -35,8 +35,8 @@ cd apply-scripts/micro-frontend-cicd/direflow-app
 --out_dir '/c/my-dev-projects/mycoolapp'
 ```
 
-### Direflow (Web Component) app with Azure DevOps CI/CD pipeline
-This will generate all scripts necessary to build and deploy a micro-service hosted via AWS ECS. CI/CD pipeline uses Azure DevOps
+### .NET Micro-service deployed onto AWS ECS
+This will generate all scripts necessary to build and deploy a micro-service deployed to AWS ECS. CI/CD pipeline uses Azure DevOps
 
 To generate the resources, your target project needs to be on your local machine as you will need to pass the target directory to the apply script.
 
