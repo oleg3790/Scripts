@@ -1,0 +1,159 @@
+trigger:
+  branches:
+    include:
+      - master
+  paths:
+    exclude:
+      - '*.md'
+
+pr:
+  branches:
+    include:
+      - master
+  paths:
+    exclude:
+      - '*.md'
+
+parameters:
+  - name: Deploy_To
+    displayName: Deploy To
+    type: string
+    default: None
+    values:
+    - None
+    - Non-Production
+    - Production
+  - name: Plan_Infrastructure_Changes_For
+    displayName: Plan Infrastructure Changes For (ignored when deploying)
+    type: string
+    default: Non-Production
+    values:
+    - Non-Production
+    - Production
+
+variables:
+  - name: NON_PROD_POOL
+    value: :{azp-app-pool-np}:
+  - name: PROD_POOL
+    value: :{azp-app-pool-prod}:
+  - name: ECR_NAME
+    value: :{ecr-name}:
+  - name: CLUSTER_NAME
+    value: :{cluster-name}:
+  - name: TF_PLAN_ENV
+    ${{ if eq(parameters.Plan_Infrastructure_Changes_For, 'Non-Production') }}:
+      value: non-prod
+    ${{ if eq(parameters.Plan_Infrastructure_Changes_For, 'Production') }}:
+      value: prod
+  - name: TF_APPLY_ENV
+    ${{ if eq(parameters.Deploy_To, 'Non-Production') }}:
+      value: non-prod
+    ${{ if eq(parameters.Deploy_To, 'Production') }}:
+      value: prod
+  - name: disable.coverage.autogenerate
+    value: 'true'
+
+stages:
+  - stage: Continuous_Integration
+    displayName: Continuous Integration
+    pool: $(NON_PROD_POOL)
+    jobs:
+    - job: ci
+      displayName: Build and Test
+      steps:
+      - task: DotNetCoreCLI@2
+        displayName: Build and Test
+        inputs:
+          command: custom
+          custom: cake
+          arguments: 'build.cake'
+      - task: PublishTestResults@2
+        displayName: Publish Test Results
+        condition: always()
+        inputs:
+          testResultsFormat: 'VSTest'
+          testResultsFiles: 'vstestreport_UnitTest*.trx'
+          testRunTitle: 'Unit Tests'
+      - task: Palmmedia.reportgenerator.reportgenerator-build-release-task.reportgenerator@4
+        displayName: Generate Test Report
+        inputs:
+          reports: 'src/**/*.Test/coverage.cobertura.xml'
+          targetdir: 'reports'
+          reporttypes: 'HtmlInline_AzurePipelines;Cobertura;Badges'
+      - task: PublishCodeCoverageResults@1
+        displayName: Publish Code Coverage
+        inputs:
+          codeCoverageTool: 'Cobertura'
+          summaryFileLocation: 'reports/Cobertura.xml'
+          reportDirectory: 'reports'
+    - job: infrastructure_plan
+      displayName: Infrastructure Plan
+      # Only run plan for non-deployments, we will always deploy infra changes when a deployment has been chosen
+      condition: and(succeeded(), eq('${{ parameters.Deploy_To }}', 'None'))
+      ${{ if eq(parameters.Plan_Infrastructure_Changes_For, 'Non-Production') }}:
+        pool: $(NON_PROD_POOL)
+      ${{ if eq(parameters.Plan_Infrastructure_Changes_For, 'Production') }}:
+        pool: $(PROD_POOL)
+      steps:
+        - bash: ./cicd/infrastructure-apply.sh -e $(TF_PLAN_ENV) -b true
+          displayName: Infrastructure Change Plan For ${{ parameters.Plan_Infrastructure_Changes_For }}
+
+  - stage: Non_Prod_Deploy
+    displayName: Non Prod Deploy
+    pool: $(NON_PROD_POOL)
+    dependsOn: Continuous_Integration
+    condition: and(succeeded(), eq('${{ parameters.Deploy_To }}', 'Non-Production'))
+    jobs:
+      - job: infrastructure_apply
+        displayName: Infrastructure Apply
+        steps:
+          - bash: ./cicd/infrastructure-apply.sh -e $(TF_APPLY_ENV) -a true -b true
+            displayName: Infrastructure Apply For Non Prod
+      - job: build_push_image
+        dependsOn: infrastructure_apply
+        displayName: Build & Push Image
+        steps:
+          - bash: BRANCH=$(Build.SourceBranchName) && TAG="$(./cicd/generate-tag.sh -b $BRANCH)" && echo "##vso[task.setvariable variable=TAG]$TAG"
+            displayName: Generate Image Tag
+          - bash: ./cicd/build-image.sh -n $(ECR_NAME) -t $(TAG)
+            displayName: Build Image
+          - bash: ./cicd/push-image.sh -n $(ECR_NAME) -t $(TAG)
+            displayName: Push Image
+      - job: refresh_ecs_service
+        dependsOn: build_push_image
+        displayName: Refresh ECS Service
+        steps:
+          - bash: ./cicd/ecs-refresh.sh -c $(CLUSTER_NAME)
+            displayName: ECS Refresh
+
+  - stage: Prod_Deploy
+    displayName: Production Deploy
+    pool: $(PROD_POOL)
+    dependsOn: Continuous_Integration
+    condition:
+      and (
+        in(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/tags/Release-')),
+        in(succeeded(), eq('${{ parameters.Deploy_To }}', 'Production'))
+      )
+    jobs:
+      - job: infrastructure_apply
+        displayName: Infrastructure Apply
+        steps:
+          - bash: ./cicd/infrastructure-apply.sh -e $(TF_APPLY_ENV) -a true -b true
+            displayName: Infrastructure Apply For Prod
+      - job: build_push_image
+        dependsOn: infrastructure_apply
+        displayName: Build & Push Image
+        steps:
+          - bash: BRANCH=$(Build.SourceBranchName) && TAG="$(./cicd/generate-tag.sh -b $BRANCH)" && echo "##vso[task.setvariable variable=TAG]$TAG"
+            displayName: Generate Image Tag
+          - bash: ./cicd/build-image.sh -n $(ECR_NAME) -t $(TAG)
+            displayName: Build Image
+          - bash: ./cicd/push-image.sh -n $(ECR_NAME) -t $(TAG)
+            displayName: Push Image
+      - job: refresh_ecs_service
+        dependsOn: build_push_image
+        displayName: Refresh ECS Service
+        steps:
+          - bash: ./cicd/ecs-refresh.sh -c $(CLUSTER_NAME)
+            displayName: ECS Refresh

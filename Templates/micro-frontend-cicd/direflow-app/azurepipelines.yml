@@ -1,0 +1,128 @@
+trigger:
+  branches:
+    include:
+      - master
+  paths:
+    exclude:
+      - '*.md'
+
+pr:
+  branches:
+    include:
+      - master
+  paths:
+    exclude:
+      - '*.md'
+
+parameters:
+  - name: Deploy_To
+    displayName: Deploy To
+    type: string
+    default: None
+    values:
+    - None
+    - Non-Production
+    - Release-Test
+    - Production
+
+variables:
+  - name: ARTIFACT_NAME
+    value: :{bundle}:
+  - name: NP_BUCKET
+    value: :{non-prod-s3-bucket}:
+  - name: PROD_BUCKET
+    value: :{prod-s3-bucket}:
+  - name: APP_DIR
+    value: :{s3-app-directory}:
+  - name: RELEASE_TEST_DIR
+    value: :{s3-app-directory}:-rt
+
+stages:
+- stage: Continuous_Integration
+  pool: :{azp-app-pool-ci}:
+  jobs:
+  - job: ci
+    steps:
+    - task: NodeTool@0
+      displayName: 'Install Node.js'
+      inputs:
+        versionSpec: '12.x'
+    - bash: cicd/build.sh -e $(EMAIL_ADDRESS) -a $(API_KEY) -b $(Build.SourceBranchName)
+      displayName: 'Yarn Install, Build, and Test'
+    - task: PublishTestResults@2
+      displayName: 'Publish Test Results'
+      condition: succeededOrFailed()
+      inputs:
+        testRunner: JUnit
+        testResultsFiles: '**/test-report.xml'
+    - task: PublishCodeCoverageResults@1
+      displayName: 'Publish Code Coverage'
+      inputs:
+        codeCoverageTool: Cobertura
+        summaryFileLocation: $(System.DefaultWorkingDirectory)/:{web-component-name}:/coverage/cobertura-coverage.xml
+        reportDirectory: $(System.DefaultWorkingDirectory)/:{web-component-name}:/lcov-report
+    - task: PublishPipelineArtifact@1
+      displayName: Publish Build
+      inputs:
+        artifactName: $(ARTIFACT_NAME)
+        targetPath: $(System.DefaultWorkingDirectory)/:{web-component-name}:/build
+
+- stage: Prod_Deployment
+  dependsOn: Continuous_Integration
+  pool: :{azp-app-pool-prod}:
+  condition:
+    and (
+      in(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/tags/Release-')),
+      in(succeeded(), eq('${{ parameters.Deploy_To }}', 'Production'))
+    )
+  jobs:
+  - job: prod_deploy
+    steps:
+    - task: DownloadPipelineArtifact@2
+      displayName: Download Build
+      inputs:
+        source: current
+        artifact: $(ARTIFACT_NAME)
+        downloadPath: $(System.DefaultWorkingDirectory)/:{web-component-name}:/build
+    - bash: cicd/deploy.sh -b $(PROD_BUCKET) -c $(PROD_BUCKET) -s $(APP_DIR)
+      displayName: 'Upload to S3 and Clear CDN Cache'
+
+- stage: Non_Prod_Deployment
+  dependsOn: Continuous_Integration
+  pool: :{azp-app-pool-np}:
+  condition:
+    and (
+      in(failed(), startsWith(variables['Build.SourceBranch'], 'refs/tags/Release-')),
+      in(succeeded(), eq('${{ parameters.Deploy_To }}', 'Non-Production'))
+    )
+  jobs:
+  - job: non_prod_deploy
+    steps:
+    - task: DownloadPipelineArtifact@2
+      displayName: Download Build
+      inputs:
+        source: current
+        artifact: $(ARTIFACT_NAME)
+        downloadPath: $(System.DefaultWorkingDirectory)/:{web-component-name}:/build
+    - bash: cicd/deploy.sh -b $(NP_BUCKET) -c $(NP_BUCKET) -s $(APP_DIR)
+      displayName: 'Upload to S3 and Clear CDN Cache'
+
+- stage: Non_Prod_Release_Test_Deployment
+  dependsOn: Continuous_Integration
+  pool: :{azp-app-pool-np}:
+  condition:
+    and (
+      in(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/tags/Release-')),
+      in(succeeded(), eq('${{ parameters.Deploy_To }}', 'Release-Test'))
+    )
+  jobs:
+  - job: release_test_deploy
+    steps:
+    - task: DownloadPipelineArtifact@2
+      displayName: Download Build
+      inputs:
+        source: current
+        artifact: $(ARTIFACT_NAME)
+        downloadPath: $(System.DefaultWorkingDirectory)/:{web-component-name}:/build
+    - bash: cicd/deploy.sh -b $(NP_BUCKET) -c $(NP_BUCKET) -s $(RELEASE_TEST_DIR)
+      displayName: 'Upload to S3 and Clear CDN Cache'
